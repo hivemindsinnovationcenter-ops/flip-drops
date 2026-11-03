@@ -405,14 +405,15 @@ function applyGains(instant) {
   }
 }
 
-const isPlaying = () => !elA.paused;
+const isPlaying = () => !elA.paused || !elB.paused;
 
 async function play() {
   ensureAudioGraph();
   if (ctx.state === "suspended") await ctx.resume();
   const end = trackLength();
-  if (end && elA.currentTime >= end - 0.05) seek(0);
-  elB.currentTime = elA.currentTime;
+  const now = audible().currentTime;
+  if (end && now >= end - 0.05) seek(0);
+  else silent().currentTime = now;
   try {
     await Promise.all([elA.play(), elB.play()]);
   } catch (err) {
@@ -449,15 +450,32 @@ function setPlayIcon(playing) {
   $("play").setAttribute("aria-label", playing ? "Pause" : "Play");
 }
 
-// Keep B locked to A.
-setInterval(() => {
-  if (!isPlaying() || elB.paused) return;
-  if (Math.abs(elA.currentTime - elB.currentTime) > 0.04) elB.currentTime = elA.currentTime;
-}, 250);
+// The mix you're hearing is the clock. The silent one is nudged to follow it,
+// so any correction happens where you can't hear it.
+const audible = () => (slotFor(side) === "a" ? elA : elB);
+const silent = () => (slotFor(side) === "a" ? elB : elA);
 
-elA.addEventListener("ended", pause);
-elA.addEventListener("loadedmetadata", () => { duration = trackLength(); draw(); });
-elA.addEventListener("error", () => showToast("The audio couldn't load. This browser may not support the file type."));
+setInterval(() => {
+  if (!isPlaying()) return;
+  const lead = audible(), follow = silent();
+  if (follow.paused || follow.seeking || lead.seeking || follow.readyState < 2) return;
+  const drift = follow.currentTime - lead.currentTime;
+  if (Math.abs(drift) > 0.08) follow.currentTime = lead.currentTime + 0.02;
+}, 400);
+
+for (const el of [elA, elB]) {
+  el.addEventListener("ended", () => { if (el === audible()) pause(); });
+  el.addEventListener("loadedmetadata", () => { duration = trackLength(); draw(); renderPins(); });
+  el.addEventListener("error", () => showToast("The audio couldn't load. This browser may not support the file type."));
+  // If the mix you're hearing has to wait for data, wait together.
+  el.addEventListener("waiting", () => { if (el === audible() && !silent().paused) silent().pause(); });
+  el.addEventListener("playing", () => {
+    if (el === audible() && silent().paused && isPlaying()) {
+      silent().currentTime = el.currentTime;
+      silent().play().catch(() => {});
+    }
+  });
+}
 
 function setSide(next, instant) {
   side = next;
@@ -496,7 +514,7 @@ function shape() {
 
 function progress() {
   const end = trackLength();
-  return end ? Math.min(1, elA.currentTime / end) : 0;
+  return end ? Math.min(1, audible().currentTime / end) : 0;
 }
 
 function draw() {
@@ -526,11 +544,12 @@ function draw() {
   g.fillRect(Math.round(p * w) - 1, 0, 2 * (window.devicePixelRatio || 1), h);
 
   const end = trackLength();
-  $("timeNow").textContent = fmt(elA.currentTime);
-  $("timeRest").textContent = "-" + fmt(Math.max(0, end - elA.currentTime));
-  $("noteAt").textContent = fmt(elA.currentTime);
+  const now = audible().currentTime;
+  $("timeNow").textContent = fmt(now);
+  $("timeRest").textContent = "-" + fmt(Math.max(0, end - now));
+  $("noteAt").textContent = fmt(now);
   canvas.setAttribute("aria-valuenow", String(Math.round(p * 100)));
-  canvas.setAttribute("aria-valuetext", `${fmt(elA.currentTime)} of ${fmt(end)}`);
+  canvas.setAttribute("aria-valuetext", `${fmt(now)} of ${fmt(end)}`);
 }
 
 (function frame() { if (!scrubbing) draw(); requestAnimationFrame(frame); })();
@@ -545,8 +564,8 @@ canvas.addEventListener("pointermove", (e) => { if (scrubbing) seekFromEvent(e);
 canvas.addEventListener("pointerup", () => { scrubbing = false; });
 canvas.addEventListener("pointercancel", () => { scrubbing = false; });
 canvas.addEventListener("keydown", (e) => {
-  if (e.key === "ArrowRight") { seek(elA.currentTime + 5); e.preventDefault(); }
-  if (e.key === "ArrowLeft") { seek(elA.currentTime - 5); e.preventDefault(); }
+  if (e.key === "ArrowRight") { seek(audible().currentTime + 5); e.preventDefault(); }
+  if (e.key === "ArrowLeft") { seek(audible().currentTime - 5); e.preventDefault(); }
 });
 
 function renderPins() {
@@ -560,7 +579,6 @@ function renderPins() {
     box.appendChild(pin);
   }
 }
-elA.addEventListener("loadedmetadata", renderPins);
 
 // ── Voting ────────────────────────────────────────────────────
 function renderVote() {
@@ -604,7 +622,7 @@ $("noteForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("noteInput").value.trim();
   if (!text) return;
-  const at = Math.round(elA.currentTime * 10) / 10;
+  const at = Math.round(audible().currentTime * 10) / 10;
   $("noteSend").disabled = true;
   try {
     await api.post({ action: "note", id, listenerId: me, at, body: text, name: $("listenerName").value.trim() });
