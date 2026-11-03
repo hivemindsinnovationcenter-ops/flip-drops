@@ -432,7 +432,7 @@ function loadMixes() {
   const prog = { a: 0, b: 0 };
   const update = (k) => (got, total) => { prog[k] = got / total; loadPct = Math.round((prog.a + prog.b) * 50); };
   loading = Promise.all([fetchMix(drop.urlA, update("a")), fetchMix(drop.urlB, update("b"))])
-    .then(([a, b]) => { bufA = a; bufB = b; duration = trackLength(); renderPins(); $("play").classList.remove("busy"); })
+    .then(([a, b]) => { bufA = a; bufB = b; renderPins(); draw(); $("play").classList.remove("busy"); })
     .catch((err) => {
       loading = null; loadFailed = true;
       $("play").classList.remove("busy");
@@ -467,7 +467,7 @@ const ready = () => !!(bufA && bufB);
 
 function position() {
   if (!playing || !ctx) return offset;
-  return Math.max(0, Math.min(trackLength(), ctx.currentTime - startedAt));
+  return Math.max(0, Math.min(longest(), ctx.currentTime - startedAt));
 }
 
 function startSources(at) {
@@ -476,8 +476,9 @@ function startSources(at) {
   srcA = ctx.createBufferSource(); srcA.buffer = bufA; srcA.connect(gainA);
   srcB = ctx.createBufferSource(); srcB.buffer = bufB; srcB.connect(gainB);
   // One start time for both, so they're locked to the sample.
-  srcA.start(when, Math.min(at, bufA.duration));
-  srcB.start(when, Math.min(at, bufB.duration));
+  // A mix that's already finished at this point simply stays quiet.
+  if (at < bufA.duration) srcA.start(when, at);
+  if (at < bufB.duration) srcB.start(when, at);
   startedAt = when - at;
   playing = true;
 }
@@ -519,10 +520,13 @@ function seek(seconds) {
   draw();
 }
 
-function trackLength() {
-  if (bufA && bufB) return Math.min(bufA.duration, bufB.duration);
-  return duration;
+// Each mix keeps its own length: the timeline is the mix you're hearing.
+function lengthOf(slot) {
+  const buf = slot === "a" ? bufA : bufB;
+  return buf ? buf.duration : duration;
 }
+const trackLength = () => lengthOf(slotFor(side));
+const longest = () => Math.max(lengthOf("a"), lengthOf("b"));
 
 function setPlayIcon(on) {
   $("playIcon").hidden = on;
@@ -530,7 +534,7 @@ function setPlayIcon(on) {
   $("play").setAttribute("aria-label", on ? "Pause" : "Play");
 }
 
-// Stop at the end of the shorter mix.
+// Stop when the mix you're hearing ends.
 setInterval(() => {
   if (playing && trackLength() && position() >= trackLength() - 0.02) { pause(); offset = trackLength(); }
 }, 100);
@@ -551,6 +555,9 @@ function setSide(next, instant) {
     ? `Blind test · now hearing ${labelFor(next)}`
     : `Now hearing Mix ${labelFor(next)}`;
   applyGains(instant);
+  // Switching to a mix that has already finished at this point lands on its end.
+  if (position() > trackLength()) { if (playing) pause(); offset = trackLength(); }
+  renderPins();
   draw();
   if (!instant && navigator.vibrate) navigator.vibrate(8);
 }
@@ -571,7 +578,8 @@ window.addEventListener("resize", resizeCanvas);
 function shape() {
   if (!drop) return [];
   const a = drop.waveformA || [], b = drop.waveformB || [];
-  if (drop.blind) return a.map((v, i) => (v + (b[i] ?? v)) / 2);
+  // Show the waveform of the mix you're hearing. X and Y are shuffled for
+  // each listener, so this doesn't give away which mix is which.
   return slotFor(side) === "a" ? a : b;
 }
 
