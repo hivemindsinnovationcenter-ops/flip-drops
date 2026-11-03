@@ -296,15 +296,14 @@ let side = "one";         // "one" or "two"
 let duration = 0;
 let scrubbing = false;
 let ctx = null, gainA = null, gainB = null;
-// Both mixes are downloaded and decoded in full, then played from memory
-// against one clock, so they stay sample-locked and never stall mid-song.
-let bufA = null, bufB = null;      // decoded audio
-let srcA = null, srcB = null;      // the sources playing right now
+// Both mixes stream, so playback starts straight away. Only the mix you're
+// hearing plays; the other waits, paused, at the same spot. Switching hands
+// over from one to the other without a gap.
+const elA = new Audio();
+const elB = new Audio();
+for (const el of [elA, elB]) { el.crossOrigin = "anonymous"; el.preload = "auto"; el.setAttribute("playsinline", ""); }
 let playing = false;
-let startedAt = 0;                 // ctx time that lines up with position 0
-let offset = 0;                    // position while paused
-let loading = null;                // promise while downloading
-let loadPct = 0, loadFailed = false;
+let handoff = 0;   // bumps on every switch/pause so a stale handover gives up
 
 const slotFor = (s) => s === "one" ? xIs : (xIs === "a" ? "b" : "a");
 const labelFor = (s) => drop && drop.blind ? (s === "one" ? "X" : "Y") : slotFor(s).toUpperCase();
@@ -333,8 +332,9 @@ async function load() {
     xIs = "a";
   }
 
+  elA.src = drop.urlA;
+  elB.src = drop.urlB;
   duration = drop.duration || 0;
-  loadMixes().catch(() => {});
 
   $("sender").textContent = drop.senderName || "Flip Drops";
   $("avatar").textContent = (drop.senderName || "F").trim().charAt(0).toUpperCase();
@@ -390,56 +390,9 @@ function ensureAudioGraph() {
   ctx = new AC();
   gainA = ctx.createGain();
   gainB = ctx.createGain();
-  gainA.connect(ctx.destination);
-  gainB.connect(ctx.destination);
+  ctx.createMediaElementSource(elA).connect(gainA).connect(ctx.destination);
+  ctx.createMediaElementSource(elB).connect(gainB).connect(ctx.destination);
   applyGains(true);
-}
-
-// Download one file, reporting progress, and decode it.
-async function fetchMix(url, onBytes) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("download");
-  const total = Number(res.headers.get("content-length")) || 0;
-  if (!res.body || !res.body.getReader || !total) {
-    const data = await res.arrayBuffer();
-    onBytes(1, 1);
-    return decode(data);
-  }
-  const reader = res.body.getReader();
-  const chunks = [];
-  let got = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value); got += value.length;
-    onBytes(Math.min(got, total), total);
-  }
-  return decode(await new Blob(chunks).arrayBuffer());
-}
-
-function decode(data) {
-  // Older Safari only has the callback form.
-  return new Promise((resolve, reject) => {
-    const p = ctx.decodeAudioData(data, resolve, reject);
-    if (p && p.then) p.then(resolve, reject);
-  });
-}
-
-function loadMixes() {
-  if (loading) return loading;
-  ensureAudioGraph();
-  loadFailed = false;
-  const prog = { a: 0, b: 0 };
-  const update = (k) => (got, total) => { prog[k] = got / total; loadPct = Math.round((prog.a + prog.b) * 50); };
-  loading = Promise.all([fetchMix(drop.urlA, update("a")), fetchMix(drop.urlB, update("b"))])
-    .then(([a, b]) => { bufA = a; bufB = b; renderPins(); draw(); $("play").classList.remove("busy"); })
-    .catch((err) => {
-      loading = null; loadFailed = true;
-      $("play").classList.remove("busy");
-      showToast("The audio couldn't load. Check your connection and tap play to try again.");
-      throw err;
-    });
-  return loading;
 }
 
 function levelFactors() {
@@ -448,85 +401,129 @@ function levelFactors() {
   return { a: ref / drop.rmsA, b: ref / drop.rmsB };
 }
 
-function applyGains(instant) {
+function setGain(slot, on, instant) {
   if (!ctx) return;
-  const f = levelFactors();
-  const live = slotFor(side);
+  const g = slot === "a" ? gainA : gainB;
+  const v = on ? levelFactors()[slot] : 0;
   const t = ctx.currentTime;
-  const targetA = live === "a" ? f.a : 0;
-  const targetB = live === "b" ? f.b : 0;
-  for (const [g, v] of [[gainA, targetA], [gainB, targetB]]) {
-    g.gain.cancelScheduledValues(t);
-    if (instant) g.gain.setValueAtTime(v, t);
-    else g.gain.setTargetAtTime(v, t, 0.01);
-  }
+  g.gain.cancelScheduledValues(t);
+  if (instant) g.gain.setValueAtTime(v, t);
+  else g.gain.setTargetAtTime(v, t, 0.008);
 }
 
+function applyGains(instant) {
+  const live = slotFor(side);
+  setGain("a", live === "a", instant);
+  setGain("b", live === "b", instant);
+}
+
+const elFor = (slot) => (slot === "a" ? elA : elB);
+const otherSlot = (slot) => (slot === "a" ? "b" : "a");
+const audible = () => elFor(slotFor(side));
 const isPlaying = () => playing;
-const ready = () => !!(bufA && bufB);
+const position = () => audible().currentTime || 0;
 
-function position() {
-  if (!playing || !ctx) return offset;
-  return Math.max(0, Math.min(longest(), ctx.currentTime - startedAt));
+// Each mix keeps its own length: the timeline is the mix you're hearing.
+function lengthOf(slot) {
+  const el = elFor(slot);
+  return isFinite(el.duration) && el.duration > 0 ? el.duration : duration;
 }
+const trackLength = () => lengthOf(slotFor(side));
 
-function startSources(at) {
-  stopSources();
-  const when = ctx.currentTime + 0.03;
-  srcA = ctx.createBufferSource(); srcA.buffer = bufA; srcA.connect(gainA);
-  srcB = ctx.createBufferSource(); srcB.buffer = bufB; srcB.connect(gainB);
-  // One start time for both, so they're locked to the sample.
-  // A mix that's already finished at this point simply stays quiet.
-  if (at < bufA.duration) srcA.start(when, at);
-  if (at < bufB.duration) srcB.start(when, at);
-  startedAt = when - at;
-  playing = true;
-}
-
-function stopSources() {
-  for (const src of [srcA, srcB]) {
-    if (!src) continue;
-    try { src.stop(); } catch (_) {}
-    src.disconnect();
-  }
-  srcA = srcB = null;
-}
-
-async function play() {
+function play() {
   ensureAudioGraph();
-  // Must happen first, inside the tap, or iPhones keep the audio muted.
+  // play() has to be called inside the tap itself or iPhones block it.
   if (ctx.state === "suspended") ctx.resume();
-  if (!ready()) {
-    $("play").classList.add("busy");
-    try { await loadMixes(); } catch (_) { return; }
-  }
-  if (ctx.state === "suspended") await ctx.resume();
-  const end = trackLength();
-  if (end && offset >= end - 0.05) offset = 0;
-  startSources(offset);
+  const el = audible();
+  if (el.currentTime >= trackLength() - 0.05) el.currentTime = 0;
+  elFor(otherSlot(slotFor(side))).pause();
+  applyGains(true);
+  playing = true;
   setPlayIcon(true);
+  el.play().catch(() => {
+    playing = false;
+    setPlayIcon(false);
+    showToast("Playback was blocked. Tap play again.");
+  });
 }
 
 function pause() {
-  if (playing) offset = position();
+  handoff++;
   playing = false;
-  stopSources();
+  elA.pause();
+  elB.pause();
+  $("play").classList.remove("busy");
   setPlayIcon(false);
+  park();
 }
 
 function seek(seconds) {
   const t = Math.max(0, Math.min(trackLength() || 0, seconds));
-  if (playing && ready()) startSources(t); else offset = t;
+  audible().currentTime = t;
+  park();
   draw();
 }
 
-// Each mix keeps its own length: the timeline is the mix you're hearing.
-function lengthOf(slot) {
-  const buf = slot === "a" ? bufA : bufB;
-  return buf ? buf.duration : duration;
+// Keep the mix you're not hearing waiting just ahead of you, so its audio is
+// already loaded when you switch.
+function park() {
+  const slot = otherSlot(slotFor(side));
+  const el = elFor(slot);
+  if (!el.paused || !el.src) return;
+  const t = Math.min(position() + (playing ? 0.5 : 0), lengthOf(slot));
+  if (Math.abs(el.currentTime - t) > 0.3) el.currentTime = t;
 }
-const trackLength = () => lengthOf(slotFor(side));
-const longest = () => Math.max(lengthOf("a"), lengthOf("b"));
+setInterval(() => { if (playing) park(); }, 1000);
+
+const once = (el, type) => new Promise((r) => el.addEventListener(type, r, { once: true }));
+
+// Switch from one mix to the other at the same moment in the song. The old mix
+// stays audible until the new one is actually playing and lined up, then they
+// crossfade, so you never hear a gap or a jump.
+function handOver(fromSlot, toSlot) {
+  const from = elFor(fromSlot), to = elFor(toSlot);
+  const id = ++handoff;
+  const at = from.currentTime || 0;
+
+  if (at >= lengthOf(toSlot) - 0.05) {          // the other mix has already ended here
+    playing = false; elA.pause(); elB.pause(); setPlayIcon(false);
+    to.currentTime = lengthOf(toSlot);
+    applyGains(true);
+    return;
+  }
+  if (!playing) { to.currentTime = at; applyGains(true); return; }
+
+  setGain(toSlot, false, true);
+  to.currentTime = at + seekLag;
+  to.play().then(async () => {
+    if (id !== handoff) return;
+    if (!(await lineUp(from, to, id))) return;
+    setGain(toSlot, true);
+    setGain(fromSlot, false);
+    setTimeout(() => { if (id === handoff && audible() === to) { from.pause(); park(); } }, 80);
+  }).catch(() => {
+    if (id !== handoff) return;
+    applyGains(true); from.pause();
+  });
+}
+
+// How long a jump takes to land, learned as we go, so the new mix is aimed
+// at where the old one will be, not where it was.
+let seekLag = 0.08;
+const tick = () => new Promise((r) => setTimeout(r, 40));
+
+async function lineUp(from, to, id) {
+  for (let i = 0; i < 5; i++) {
+    await tick();
+    if (id !== handoff) return false;
+    const off = from.currentTime - to.currentTime;   // > 0: new mix is behind
+    if (Math.abs(off) <= 0.02) return true;
+    seekLag = Math.max(0.01, Math.min(0.8, seekLag + off));
+    to.currentTime = from.currentTime + seekLag;
+    await once(to, "seeked");
+  }
+  return id === handoff;
+}
 
 function setPlayIcon(on) {
   $("playIcon").hidden = on;
@@ -534,17 +531,21 @@ function setPlayIcon(on) {
   $("play").setAttribute("aria-label", on ? "Pause" : "Play");
 }
 
-// Stop when the mix you're hearing ends.
-setInterval(() => {
-  if (playing && trackLength() && position() >= trackLength() - 0.02) { pause(); offset = trackLength(); }
-}, 100);
+for (const el of [elA, elB]) {
+  el.addEventListener("ended", () => { if (el === audible() && playing) pause(); });
+  el.addEventListener("loadedmetadata", () => { renderPins(); draw(); });
+  el.addEventListener("error", () => { if (el === audible()) showToast("The audio couldn't load. Check your connection and try again."); });
+  // A short pulse on the play button if the connection makes it wait.
+  el.addEventListener("waiting", () => { if (el === audible() && playing) $("play").classList.add("busy"); });
+  el.addEventListener("playing", () => { if (el === audible()) $("play").classList.remove("busy"); });
+}
 
-// Keep the clock running if the phone locks or another app grabbed audio.
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && playing && ctx && ctx.state !== "running") ctx.resume();
 });
 
 function setSide(next, instant) {
+  const fromSlot = slotFor(side);
   side = next;
   $("seg").classList.toggle("right", next === "two");
   $("sideOne").setAttribute("aria-pressed", String(next === "one"));
@@ -554,9 +555,8 @@ function setSide(next, instant) {
   $("eyebrow").textContent = drop && drop.blind
     ? `Blind test · now hearing ${labelFor(next)}`
     : `Now hearing Mix ${labelFor(next)}`;
-  applyGains(instant);
-  // Switching to a mix that has already finished at this point lands on its end.
-  if (position() > trackLength()) { if (playing) pause(); offset = trackLength(); }
+  if (fromSlot !== slotFor(next)) handOver(fromSlot, slotFor(next));
+  else applyGains(instant);
   renderPins();
   draw();
   if (!instant && navigator.vibrate) navigator.vibrate(8);
@@ -616,7 +616,7 @@ function draw() {
 
   const end = trackLength();
   const now = position();
-  $("timeNow").textContent = !ready() && loading ? `Loading ${loadPct}%` : fmt(now);
+  $("timeNow").textContent = fmt(now);
   $("timeRest").textContent = "-" + fmt(Math.max(0, end - now));
   $("noteAt").textContent = fmt(now);
   canvas.setAttribute("aria-valuenow", String(Math.round(p * 100)));
