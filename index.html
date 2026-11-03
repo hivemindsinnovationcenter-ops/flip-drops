@@ -39,11 +39,14 @@ button { cursor: pointer; }
 
 /* Giant background letters */
 .letters { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.letter { position: absolute; font-weight: 900; font-size: min(104vw, 470px); line-height: .8; letter-spacing: -0.06em; }
+.letter { position: absolute; display: grid; font-weight: 900; font-size: min(104vw, 470px); line-height: .8; }
 .letter.one { top: 120px; left: -8%; }
 .letter.two { top: 260px; left: 44%; }
+/* Both layers sit in the same grid cell with the same padding, so they line up
+   exactly, and the padding gives the gradient room to cover the whole glyph. */
+.letter > span { grid-area: 1 / 1; padding: 0.06em 0.12em 0.22em 0.04em; }
 .letter .outline { color: transparent; -webkit-text-stroke: 1.5px rgba(255,255,255,0.2); }
-.letter .fill { position: absolute; inset: 0; background: var(--flame); -webkit-background-clip: text; background-clip: text; color: transparent; opacity: 0; transition: opacity .45s ease; }
+.letter .fill { background: var(--flame); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; opacity: 0; transition: opacity .45s ease; }
 .letter.on .fill { opacity: 1; }
 
 .progress { position: relative; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.14); overflow: hidden; }
