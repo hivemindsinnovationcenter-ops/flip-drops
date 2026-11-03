@@ -57,6 +57,9 @@ button { cursor: pointer; }
 .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .who strong { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .who span { font-size: 12px; color: var(--sub); }
+.open-app { position: relative; align-self: flex-start; margin-top: 12px; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px 0 12px; border-radius: 17px; border: 1px solid var(--glass-line); background: rgba(255,255,255,0.08); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); color: #f3f4f6; font-size: 13px; font-weight: 600; text-decoration: none; }
+.open-app[hidden] { display: none; }
+.open-app i { width: 18px; height: 18px; border-radius: 5px; background: var(--orb); display: inline-block; }
 .pill { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--glass-line); background: rgba(255,255,255,0.08); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); font-family: var(--mono); font-size: 12px; font-weight: 600; color: #ffd9c4; white-space: nowrap; }
 .pill.urgent { color: #ff9ab0; border-color: rgba(255,90,110,0.45); }
 
@@ -155,6 +158,8 @@ canvas.waveform { width: 100%; height: 48px; display: block; touch-action: none;
       <div class="who"><strong id="sender">Flip Drops</strong><span>sent you a drop</span></div>
       <div class="pill" id="timeLeft" role="timer">--</div>
     </header>
+
+    <a class="open-app" id="openApp" hidden href="#"><i aria-hidden="true"></i>Have the app? Open in Flip Drops</a>
 
     <div class="spacer"></div>
 
@@ -295,15 +300,6 @@ let xIs = "a";            // which real mix is behind the first button
 let side = "one";         // "one" or "two"
 let duration = 0;
 let scrubbing = false;
-let ctx = null, gainA = null, gainB = null;
-// Both mixes stream, so playback starts straight away. Only the mix you're
-// hearing plays; the other waits, paused, at the same spot. Switching hands
-// over from one to the other without a gap.
-const elA = new Audio();
-const elB = new Audio();
-for (const el of [elA, elB]) { el.crossOrigin = "anonymous"; el.preload = "auto"; el.setAttribute("playsinline", ""); }
-let playing = false;
-let handoff = 0;   // bumps on every switch/pause so a stale handover gives up
 
 const slotFor = (s) => s === "one" ? xIs : (xIs === "a" ? "b" : "a");
 const labelFor = (s) => drop && drop.blind ? (s === "one" ? "X" : "Y") : slotFor(s).toUpperCase();
@@ -332,9 +328,8 @@ async function load() {
     xIs = "a";
   }
 
-  elA.src = drop.urlA;
-  elB.src = drop.urlB;
   duration = drop.duration || 0;
+  prepareAudio();
 
   $("sender").textContent = drop.senderName || "Flip Drops";
   $("avatar").textContent = (drop.senderName || "F").trim().charAt(0).toUpperCase();
@@ -352,6 +347,12 @@ async function load() {
   document.querySelector("#letterOne .fill").textContent = labelFor("one");
   document.querySelector("#letterTwo .outline").textContent = labelFor("two");
   document.querySelector("#letterTwo .fill").textContent = labelFor("two");
+
+  if (IS_IOS) {
+    $("openApp").href = `flipdrops://drop/${encodeURIComponent(id)}`;
+    $("openApp").hidden = false;
+    $("openApp").addEventListener("click", () => { if (playing) pause(); });
+  }
 
   renderPins();
   renderVote();
@@ -384,14 +385,53 @@ function tickClock() {
 }
 
 // ── Audio ─────────────────────────────────────────────────────
-function ensureAudioGraph() {
+// Two ways to play, picked when the drop opens:
+//
+//  "locked"   WAV and AIFF. Both mixes are fetched in short pieces just ahead
+//             of where you are, and every piece of both mixes is scheduled on
+//             one Web Audio clock. They can't drift apart, switching is just a
+//             volume change, and nothing ever downloads the whole file.
+//  "stream"   Anything else (MP3, M4A…). Two streaming players; the one you
+//             hear is the clock and the other is lined up silently on a switch.
+//
+// When the screen locks on an iPhone, Safari stops Web Audio, so playback is
+// handed to a plain audio stream of the mix you're hearing, which keeps
+// playing on the lock screen, and handed back when you return.
+
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const PIECE = 3;          // seconds of audio per download
+const AHEAD = 8;          // pieces kept downloaded ahead of you
+const SCHEDULE_AHEAD = 3; // seconds of audio queued on the clock
+
+let ctx = null, gainA = null, gainB = null;
+let mode = "stream";
+let mixes = null;         // { a: PcmMix, b: PcmMix } in locked mode
+let playing = false;
+let background = false;   // playing from the lock-screen stream
+let pendingPlay = false;  // play was tapped before the drop finished opening
+let audioReady = false;
+
+const once = (el, type) => new Promise((r) => el.addEventListener(type, r, { once: true }));
+const elA = new Audio();
+const elB = new Audio();
+for (const el of [elA, elB]) { el.crossOrigin = "anonymous"; el.preload = "metadata"; el.setAttribute("playsinline", ""); }
+const elFor = (slot) => (slot === "a" ? elA : elB);
+const otherSlot = (slot) => (slot === "a" ? "b" : "a");
+const liveSlot = () => slotFor(side);
+
+// Plays sound even with the iPhone's silent switch on, like a music app.
+try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (_) {}
+
+function makeContext(rate) {
   if (ctx) return;
   const AC = window.AudioContext || window.webkitAudioContext;
-  ctx = new AC();
+  // Matching the file's sample rate means pieces join without resampling seams.
+  try { ctx = rate ? new AC({ sampleRate: rate, latencyHint: "playback" }) : new AC(); }
+  catch (_) { ctx = new AC(); }
   gainA = ctx.createGain();
   gainB = ctx.createGain();
-  ctx.createMediaElementSource(elA).connect(gainA).connect(ctx.destination);
-  ctx.createMediaElementSource(elB).connect(gainB).connect(ctx.destination);
+  gainA.connect(ctx.destination);
+  gainB.connect(ctx.destination);
   applyGains(true);
 }
 
@@ -408,115 +448,277 @@ function setGain(slot, on, instant) {
   const t = ctx.currentTime;
   g.gain.cancelScheduledValues(t);
   if (instant) g.gain.setValueAtTime(v, t);
-  else g.gain.setTargetAtTime(v, t, 0.008);
+  else g.gain.setTargetAtTime(v, t, 0.006);
 }
 
 function applyGains(instant) {
-  const live = slotFor(side);
-  setGain("a", live === "a", instant);
-  setGain("b", live === "b", instant);
+  setGain("a", liveSlot() === "a", instant);
+  setGain("b", liveSlot() === "b", instant);
 }
 
-const elFor = (slot) => (slot === "a" ? elA : elB);
-const otherSlot = (slot) => (slot === "a" ? "b" : "a");
-const audible = () => elFor(slotFor(side));
-const isPlaying = () => playing;
-const position = () => audible().currentTime || 0;
-
-// Each mix keeps its own length: the timeline is the mix you're hearing.
-function lengthOf(slot) {
-  const el = elFor(slot);
-  return isFinite(el.duration) && el.duration > 0 ? el.duration : duration;
-}
-const trackLength = () => lengthOf(slotFor(side));
-
-function play() {
-  ensureAudioGraph();
-  // play() has to be called inside the tap itself or iPhones block it.
-  if (ctx.state === "suspended") ctx.resume();
-  const el = audible();
-  if (el.currentTime >= trackLength() - 0.05) el.currentTime = 0;
-  elFor(otherSlot(slotFor(side))).pause();
-  applyGains(true);
-  playing = true;
-  setPlayIcon(true);
-  el.play().catch(() => {
-    playing = false;
-    setPlayIcon(false);
-    showToast("Playback was blocked. Tap play again.");
-  });
-}
-
-function pause() {
-  handoff++;
-  playing = false;
-  elA.pause();
-  elB.pause();
-  $("play").classList.remove("busy");
-  setPlayIcon(false);
-  park();
-}
-
-function seek(seconds) {
-  const t = Math.max(0, Math.min(trackLength() || 0, seconds));
-  audible().currentTime = t;
-  park();
-  draw();
-}
-
-// Keep the mix you're not hearing waiting just ahead of you, so its audio is
-// already loaded when you switch.
-function park() {
-  const slot = otherSlot(slotFor(side));
-  const el = elFor(slot);
-  if (!el.paused || !el.src) return;
-  const t = Math.min(position() + (playing ? 0.5 : 0), lengthOf(slot));
-  if (Math.abs(el.currentTime - t) > 0.3) el.currentTime = t;
-}
-setInterval(() => { if (playing) park(); }, 1000);
-
-const once = (el, type) => new Promise((r) => el.addEventListener(type, r, { once: true }));
-
-// Switch from one mix to the other at the same moment in the song. The old mix
-// stays audible until the new one is actually playing and lined up, then they
-// crossfade, so you never hear a gap or a jump.
-function handOver(fromSlot, toSlot) {
-  const from = elFor(fromSlot), to = elFor(toSlot);
-  const id = ++handoff;
-  const at = from.currentTime || 0;
-
-  if (at >= lengthOf(toSlot) - 0.05) {          // the other mix has already ended here
-    playing = false; elA.pause(); elB.pause(); setPlayIcon(false);
-    to.currentTime = lengthOf(toSlot);
-    applyGains(true);
-    return;
+// ── Reading WAV / AIFF in pieces ──────────────────────────────
+async function fetchRange(url, start, end) {
+  const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
+  if (res.status !== 206) {
+    try { res.body && res.body.cancel(); } catch (_) {}
+    throw new Error("no-range");
   }
-  if (!playing) { to.currentTime = at; applyGains(true); return; }
-
-  setGain(toSlot, false, true);
-  to.currentTime = at + seekLag;
-  to.play().then(async () => {
-    if (id !== handoff) return;
-    if (!(await lineUp(from, to, id))) return;
-    setGain(toSlot, true);
-    setGain(fromSlot, false);
-    setTimeout(() => { if (id === handoff && audible() === to) { from.pause(); park(); } }, 80);
-  }).catch(() => {
-    if (id !== handoff) return;
-    applyGains(true); from.pause();
-  });
+  return new DataView(await res.arrayBuffer());
 }
 
-// How long a jump takes to land, learned as we go, so the new mix is aimed
-// at where the old one will be, not where it was.
+const tag = (v, o) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
+
+function readExtended(v, o) { // AIFF's 80-bit sample rate
+  const exp = ((v.getUint8(o) & 0x7f) << 8) | v.getUint8(o + 1);
+  const hi = v.getUint32(o + 2), lo = v.getUint32(o + 6);
+  return (hi * 2 ** 32 + lo) * 2 ** (exp - 16383 - 63);
+}
+
+// Walks the file's chunks (fetching more header if a big tag sits in front of
+// the audio) and returns where the samples are and how they're stored.
+async function readHeader(url) {
+  let base = 0, view = await fetchRange(url, 0, 65535);
+  const ensure = async (pos, need) => {
+    if (pos >= base && pos + need <= base + view.byteLength) return;
+    base = pos; view = await fetchRange(url, pos, pos + 65535);
+    if (view.byteLength < need) throw new Error("short");
+  };
+  const kind = tag(view, 0), sub = tag(view, 8);
+  const info = {};
+  if (kind === "RIFF" && sub === "WAVE") {
+    info.le = true;
+    let pos = 12;
+    for (let i = 0; i < 64; i++) {
+      await ensure(pos, 8);
+      const id = tag(view, pos - base), size = view.getUint32(pos - base + 4, true);
+      if (id === "fmt ") {
+        await ensure(pos, 8 + Math.min(size, 40));
+        const o = pos - base + 8;
+        let format = view.getUint16(o, true);
+        info.channels = view.getUint16(o + 2, true);
+        info.rate = view.getUint32(o + 4, true);
+        info.blockAlign = view.getUint16(o + 12, true);
+        info.bits = view.getUint16(o + 14, true);
+        if (format === 0xfffe && size >= 26) format = view.getUint16(o + 24, true);
+        info.float = format === 3;
+        if (format !== 1 && format !== 3) throw new Error("compressed");
+      } else if (id === "data") {
+        info.dataOffset = pos + 8;
+        info.dataSize = size;
+        break;
+      }
+      pos += 8 + size + (size & 1);
+    }
+  } else if (kind === "FORM" && (sub === "AIFF" || sub === "AIFC")) {
+    info.le = false;
+    let pos = 12;
+    for (let i = 0; i < 64; i++) {
+      await ensure(pos, 8);
+      const id = tag(view, pos - base), size = view.getUint32(pos - base + 4, false);
+      if (id === "COMM") {
+        await ensure(pos, 8 + Math.min(size, 30));
+        const o = pos - base + 8;
+        info.channels = view.getUint16(o);
+        info.bits = view.getUint16(o + 6);
+        info.rate = readExtended(view, o + 8);
+        info.float = false;
+        if (sub === "AIFC" && size >= 22) {
+          const comp = tag(view, o + 18);
+          if (comp === "sowt") info.le = true;
+          else if (comp === "fl32" || comp === "FL32") { info.float = true; info.bits = 32; }
+          else if (comp === "fl64" || comp === "FL64") { info.float = true; info.bits = 64; }
+          else if (comp !== "NONE") throw new Error("compressed");
+        }
+        info.blockAlign = info.channels * Math.ceil(info.bits / 8);
+      } else if (id === "SSND") {
+        await ensure(pos, 16);
+        const skip = view.getUint32(pos - base + 8, false);
+        info.dataOffset = pos + 16 + skip;
+        info.dataSize = size - 8 - skip;
+        break;
+      }
+      pos += 8 + size + (size & 1);
+    }
+  } else {
+    throw new Error("not-pcm");
+  }
+  if (!info.dataOffset || !info.rate || !info.channels || !info.blockAlign) throw new Error("bad-header");
+  if (![8, 16, 24, 32, 64].includes(info.bits)) throw new Error("bits");
+  if (!info.dataSize || info.dataSize === 0xffffffff) throw new Error("unknown-length");
+  return info;
+}
+
+// The storage links the server hands out expire after an hour, so a page left
+// open longer asks for fresh ones when a download is refused.
+let refreshing = null;
+function refreshLinks() {
+  if (!refreshing) {
+    refreshing = api.get(id).then((fresh) => {
+      if (fresh.expired) { drop.expired = true; showExpired(); throw new Error("expired"); }
+      drop.urlA = fresh.urlA; drop.urlB = fresh.urlB;
+      if (mixes) { mixes.a.url = fresh.urlA; mixes.b.url = fresh.urlB; }
+      if (elA.paused && elB.paused) { elA.src = fresh.urlA; elB.src = fresh.urlB; }
+    }).finally(() => setTimeout(() => { refreshing = null; }, 10000));
+  }
+  return refreshing;
+}
+
+class PcmMix {
+  constructor(url, info) {
+    Object.assign(this, info);
+    this.url = url;
+    this.bytesPerSample = Math.ceil(this.bits / 8);
+    this.frames = Math.floor(this.dataSize / this.blockAlign);
+    this.duration = this.frames / this.rate;
+    this.pieceFrames = Math.round(PIECE * this.rate);
+    this.pieces = Math.ceil(this.frames / this.pieceFrames);
+    this.ready = new Map();   // piece -> AudioBuffer
+    this.loading = new Map(); // piece -> Promise
+    this.failedAt = new Map(); // piece -> time of last failed download
+  }
+  startOf(i) { return (i * this.pieceFrames) / this.rate; }
+  pieceAt(t) { return Math.max(0, Math.min(this.pieces - 1, Math.floor((t * this.rate) / this.pieceFrames))); }
+  get(i) {
+    if (i < 0 || i >= this.pieces) return null;
+    if (this.ready.has(i)) return Promise.resolve(this.ready.get(i));
+    if (this.loading.has(i)) return this.loading.get(i);
+    const first = i * this.pieceFrames;
+    const count = Math.min(this.pieceFrames, this.frames - first);
+    const start = this.dataOffset + first * this.blockAlign;
+    const end = start + count * this.blockAlign - 1;
+    const p = fetchRange(this.url, start, end)
+      .catch(() => refreshLinks().then(() => fetchRange(this.url, start, end)))
+      .then((v) => { const buf = this.decode(v, Math.floor(v.byteLength / this.blockAlign)); this.ready.set(i, buf); this.failedAt.delete(i); return buf; })
+      .catch((err) => { this.failedAt.set(i, Date.now()); throw err; })
+      .finally(() => this.loading.delete(i));
+    this.loading.set(i, p);
+    p.catch(() => {});
+    return p;
+  }
+  decode(v, frames) {
+    const buf = ctx.createBuffer(this.channels, Math.max(1, frames), this.rate);
+    const bps = this.bytesPerSample, le = this.le, ch = this.channels, step = this.blockAlign;
+    for (let c = 0; c < ch; c++) {
+      const out = buf.getChannelData(c);
+      let o = c * bps;
+      if (this.float && bps === 4) for (let f = 0; f < frames; f++, o += step) out[f] = v.getFloat32(o, le);
+      else if (this.float) for (let f = 0; f < frames; f++, o += step) out[f] = v.getFloat64(o, le);
+      else if (bps === 2) for (let f = 0; f < frames; f++, o += step) out[f] = v.getInt16(o, le) / 32768;
+      else if (bps === 3) for (let f = 0; f < frames; f++, o += step) {
+        const x = le ? (v.getUint8(o) | (v.getUint8(o + 1) << 8) | (v.getInt8(o + 2) << 16))
+                     : (v.getUint8(o + 2) | (v.getUint8(o + 1) << 8) | (v.getInt8(o) << 16));
+        out[f] = x / 8388608;
+      }
+      else if (bps === 4) for (let f = 0; f < frames; f++, o += step) out[f] = v.getInt32(o, le) / 2147483648;
+      else for (let f = 0; f < frames; f++, o += step) out[f] = (v.getUint8(o) - 128) / 128;
+    }
+    return buf;
+  }
+  // Fetch what's coming up (a few at a time) and forget what's long gone.
+  keepAround(t) {
+    const cur = this.pieceAt(t);
+    let busy = this.loading.size;
+    for (let i = cur; i < cur + AHEAD && i < this.pieces && busy < 3; i++) {
+      if (this.ready.has(i) || this.loading.has(i)) continue;
+      if (Date.now() - (this.failedAt.get(i) || 0) < 2000) continue; // a bad connection: retry gently
+      this.get(i); busy++;
+    }
+    for (const i of this.ready.keys()) if (i < cur - 1 || i > cur + AHEAD + 2) this.ready.delete(i);
+  }
+}
+
+// ── Locked engine: one clock for both mixes ───────────────────
+const locked = {
+  startedAt: 0,   // clock time that lines up with 0:00
+  from: 0,        // where this run of playback began
+  offset: 0,      // position while paused or waiting
+  waiting: false, // ran out of downloaded audio; resumes by itself
+  queued: { a: new Map(), b: new Map() },
+
+  position() {
+    if (!playing || this.waiting) return this.offset;
+    return Math.max(0, ctx.currentTime - this.startedAt);
+  },
+  stopAll() {
+    for (const slot of ["a", "b"]) {
+      for (const src of this.queued[slot].values()) { try { src.stop(); } catch (_) {} src.disconnect(); }
+      this.queued[slot].clear();
+    }
+  },
+  start(t) {
+    this.stopAll();
+    this.waiting = false;
+    this.from = t;
+    const sr = ctx.sampleRate;
+    this.startedAt = Math.round((ctx.currentTime + 0.08 - t) * sr) / sr;
+    this.pump();
+  },
+  stall() {
+    this.offset = this.position();
+    this.stopAll();
+    this.waiting = true;
+    $("play").classList.add("busy");
+  },
+  pump() {
+    if (!playing || !mixes) return;
+    const now = this.position();
+    for (const slot of ["a", "b"]) mixes[slot].keepAround(now);
+    if (this.waiting) {
+      const ok = ["a", "b"].every((slot) => {
+        const m = mixes[slot];
+        if (now >= m.duration) return true;
+        const i = m.pieceAt(now);
+        return m.ready.has(i) && (i + 1 >= m.pieces || m.ready.has(i + 1));
+      });
+      if (ok) { $("play").classList.remove("busy"); this.start(this.offset); }
+      return;
+    }
+    const clock = ctx.currentTime;
+    for (const slot of ["a", "b"]) {
+      const m = mixes[slot], q = this.queued[slot];
+      if (now >= m.duration) continue;
+      for (const i of q.keys()) if (m.startOf(i + 1) < now - 1) q.delete(i);
+      for (let i = m.pieceAt(now); i < m.pieces && m.startOf(i) < now + SCHEDULE_AHEAD; i++) {
+        if (q.has(i)) continue;
+        const buf = m.ready.get(i);
+        if (!buf) {
+          if (m.startOf(i) - now < 0.25) return this.stall();
+          break;
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(slot === "a" ? gainA : gainB);
+        let when = this.startedAt + m.startOf(i), into = 0;
+        if (m.startOf(i) < this.from) { into = this.from - m.startOf(i); when = this.startedAt + this.from; }
+        if (when < clock) { into += clock - when; when = clock; } // late: stay in step anyway
+        if (into >= buf.duration) continue;
+        src.start(when, into);
+        q.set(i, src);
+      }
+    }
+  },
+};
+
+// ── Streaming fallback engine ─────────────────────────────────
+let streamGraph = false;
+let handoff = 0;
 let seekLag = 0.08;
-const tick = () => new Promise((r) => setTimeout(r, 40));
+const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+
+function connectStreams() {
+  // On iPhones the streams stay out of Web Audio so they keep playing when
+  // the screen locks; switching uses mute instead of volume there.
+  if (streamGraph || IS_IOS) return;
+  streamGraph = true;
+  ctx.createMediaElementSource(elA).connect(gainA);
+  ctx.createMediaElementSource(elB).connect(gainB);
+}
 
 async function lineUp(from, to, id) {
   for (let i = 0; i < 5; i++) {
     await tick();
     if (id !== handoff) return false;
-    const off = from.currentTime - to.currentTime;   // > 0: new mix is behind
+    const off = from.currentTime - to.currentTime;
     if (Math.abs(off) <= 0.02) return true;
     seekLag = Math.max(0.01, Math.min(0.8, seekLag + off));
     to.currentTime = from.currentTime + seekLag;
@@ -525,24 +727,235 @@ async function lineUp(from, to, id) {
   return id === handoff;
 }
 
+function streamHandOver(fromSlot, toSlot) {
+  const from = elFor(fromSlot), to = elFor(toSlot);
+  const id = ++handoff;
+  const at = from.currentTime || 0;
+  if (!playing) { to.currentTime = Math.min(at, lengthOf(toSlot)); applyGains(true); return; }
+  if (!streamGraph) to.muted = false;
+  silence(toSlot, true);
+  to.currentTime = at + seekLag;
+  to.play().then(async () => {
+    if (id !== handoff || !(await lineUp(from, to, id))) return;
+    silence(toSlot, false);
+    silence(fromSlot, true);
+    setTimeout(() => { if (id === handoff && audible() === to) { from.pause(); from.muted = false; } }, 80);
+  }).catch(() => { if (id === handoff) { silence(toSlot, false); from.pause(); } });
+}
+
+function silence(slot, quiet) {
+  if (streamGraph) setGain(slot, !quiet);
+  else elFor(slot).muted = quiet;
+}
+
+// ── Opening a drop ────────────────────────────────────────────
+async function prepareAudio() {
+  try {
+    const [ia, ib] = await Promise.all([readHeader(drop.urlA), readHeader(drop.urlB)]);
+    // Play was tapped before the files were read, so the clock started at the
+    // device's rate. Computers allow restarting it at the mix's rate; iPhones
+    // need a fresh tap for that, and resample instead.
+    if (ctx && ctx.sampleRate !== ia.rate && !IS_IOS && !streamGraph) {
+      try { ctx.close(); } catch (_) {}
+      ctx = null;
+    }
+    makeContext(ia.rate);
+    if (ctx.state !== "running") ctx.resume();
+    mixes = { a: new PcmMix(drop.urlA, ia), b: new PcmMix(drop.urlB, ib) };
+    mode = "locked";
+    // Get the opening seconds of both ready so play starts instantly.
+    for (const slot of ["a", "b"]) { mixes[slot].get(0); mixes[slot].get(1); }
+  } catch (_) {
+    mode = "stream";
+    for (const el of [elA, elB]) el.preload = "auto";
+  }
+  // The plain streams are also what keeps playing on a locked iPhone.
+  elA.src = drop.urlA;
+  elB.src = drop.urlB;
+  audioReady = true;
+  renderPins();
+  draw();
+  if (pendingPlay) { pendingPlay = false; $("play").classList.remove("busy"); play(); }
+}
+
+// ── Shared controls ───────────────────────────────────────────
+const audible = () => elFor(liveSlot());
+const isPlaying = () => playing;
+
+function position() {
+  if (background) return audible().currentTime || 0;
+  if (mode === "locked") return Math.min(locked.position(), longest());
+  return audible().currentTime || 0;
+}
+
+// Each mix keeps its own length: the timeline is the mix you're hearing.
+function lengthOf(slot) {
+  if (mixes) return mixes[slot].duration;
+  const el = elFor(slot);
+  return isFinite(el.duration) && el.duration > 0 ? el.duration : duration;
+}
+const trackLength = () => lengthOf(liveSlot());
+const longest = () => Math.max(lengthOf("a"), lengthOf("b"));
+
+let primed = false;
+function primeStreams() {
+  // iPhones only let audio start without a tap if it has played from one
+  // before, so the lock-screen streams are woken up on the first tap.
+  if (primed || !IS_IOS || mode !== "locked") return;
+  primed = true;
+  for (const el of [elA, elB]) {
+    el.muted = true;
+    el.play().then(() => { el.pause(); el.muted = false; }).catch(() => { el.muted = false; });
+  }
+}
+
+function play() {
+  if (!ctx) makeContext(mixes ? mixes.a.rate : 0);
+  if (ctx.state !== "running") ctx.resume();
+  if (!audioReady) { pendingPlay = true; $("play").classList.add("busy"); return; }
+  primeStreams();
+  if (background) return;
+  let t = position();
+  if (t >= trackLength() - 0.05) t = 0;
+  applyGains(true);
+  playing = true;
+  setPlayIcon(true);
+  if (mode === "locked") {
+    locked.start(t);
+  } else {
+    connectStreams();
+    const el = audible();
+    elFor(otherSlot(liveSlot())).pause();
+    el.currentTime = t;
+    el.play().catch(() => { playing = false; setPlayIcon(false); showToast("Playback was blocked. Tap play again."); });
+  }
+  updateMediaSession();
+}
+
+function pause() {
+  handoff++;
+  if (mode === "locked") { locked.offset = position(); locked.stopAll(); locked.waiting = false; }
+  playing = false;
+  elA.pause();
+  elB.pause();
+  background = false;
+  $("play").classList.remove("busy");
+  setPlayIcon(false);
+  updateMediaSession();
+}
+
+function seek(seconds) {
+  const t = Math.max(0, Math.min(trackLength() || 0, seconds));
+  if (background) { audible().currentTime = t; }
+  else if (mode === "locked") { if (playing) locked.start(t); else locked.offset = t; }
+  else { audible().currentTime = t; }
+  draw();
+}
+
+function switchMix(fromSlot, toSlot) {
+  if (background) {
+    // On the lock screen: swap streams at the same moment.
+    const from = elFor(fromSlot), to = elFor(toSlot);
+    to.currentTime = Math.min(from.currentTime, lengthOf(toSlot));
+    from.pause(); to.play().catch(() => {});
+    updateMediaSession();
+    return;
+  }
+  if (position() >= lengthOf(toSlot) - 0.05 && playing) {
+    // That mix has already finished at this point.
+    const end = lengthOf(toSlot);
+    pause();
+    if (mode === "locked") locked.offset = end; else elFor(toSlot).currentTime = end;
+    applyGains(true);
+    return;
+  }
+  if (mode === "locked") applyGains(false);  // both are already playing in step
+  else streamHandOver(fromSlot, toSlot);
+  updateMediaSession();
+}
+
+// The clock: queue upcoming audio, and stop at the end of the mix you hear.
+setInterval(() => {
+  if (!playing || background) return;
+  if (mode === "locked") locked.pump();
+  if (position() >= trackLength() - 0.02) { pause(); if (mode === "locked") locked.offset = trackLength(); }
+}, 100);
+
+for (const el of [elA, elB]) {
+  el.addEventListener("ended", () => { if (el === audible() && playing) pause(); });
+  el.addEventListener("loadedmetadata", () => { renderPins(); draw(); });
+  el.addEventListener("error", () => { if (mode === "stream" && el === audible()) showToast("The audio couldn't load. Check your connection and try again."); });
+  el.addEventListener("waiting", () => { if (mode === "stream" && el === audible() && playing) $("play").classList.add("busy"); });
+  el.addEventListener("playing", () => { if (el === audible()) $("play").classList.remove("busy"); });
+}
+
+// ── Screen locked / app switched ──────────────────────────────
+
+function goBackground() {
+  if (!playing || background || !IS_IOS) return;
+  const t = position();
+  if (mode === "locked") { locked.stopAll(); locked.waiting = false; }
+  else elFor(otherSlot(liveSlot())).pause();
+  background = true;
+  const el = audible();
+  if (mode === "locked") { el.currentTime = t; el.play().catch(() => {}); }
+  // In stream mode the stream you hear is already playing; it carries on.
+}
+
+function comeBack() {
+  if (!background) return;
+  background = false;
+  const el = audible();
+  const t = el.currentTime || 0;
+  const wasPlaying = !el.paused;
+  if (ctx && ctx.state !== "running") ctx.resume();
+  if (mode === "locked") {
+    el.pause();
+    locked.offset = t;
+    if (wasPlaying && playing) locked.start(t); else { playing = false; setPlayIcon(false); }
+  } else if (!wasPlaying) {
+    playing = false; setPlayIcon(false);
+  }
+  applyGains(true);
+}
+
+document.addEventListener("visibilitychange", () => (document.hidden ? goBackground() : comeBack()));
+window.addEventListener("pagehide", goBackground);
+
+// Lock-screen and headphone controls.
+function updateMediaSession() {
+  if (!("mediaSession" in navigator) || !drop) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: `${drop.title} · ${labelFor(side)}`,
+      artist: drop.senderName || "Flip Drops",
+      album: "Flip Drops",
+    });
+    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+  } catch (_) {}
+}
+
+if ("mediaSession" in navigator) {
+  const on = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch (_) {} };
+  on("play", () => {
+    if (background) { audible().play().catch(() => {}); playing = true; setPlayIcon(true); updateMediaSession(); }
+    else play();
+  });
+  on("pause", () => {
+    if (background) { audible().pause(); updateMediaSession(); navigator.mediaSession.playbackState = "paused"; }
+    else pause();
+  });
+  // Next / previous track on the lock screen or headphones flips X and Y.
+  on("nexttrack", () => setSide(side === "one" ? "two" : "one"));
+  on("previoustrack", () => setSide(side === "one" ? "two" : "one"));
+  on("seekto", (e) => seek(e.seekTime));
+}
+
 function setPlayIcon(on) {
   $("playIcon").hidden = on;
   $("pauseIcon").hidden = !on;
   $("play").setAttribute("aria-label", on ? "Pause" : "Play");
 }
-
-for (const el of [elA, elB]) {
-  el.addEventListener("ended", () => { if (el === audible() && playing) pause(); });
-  el.addEventListener("loadedmetadata", () => { renderPins(); draw(); });
-  el.addEventListener("error", () => { if (el === audible()) showToast("The audio couldn't load. Check your connection and try again."); });
-  // A short pulse on the play button if the connection makes it wait.
-  el.addEventListener("waiting", () => { if (el === audible() && playing) $("play").classList.add("busy"); });
-  el.addEventListener("playing", () => { if (el === audible()) $("play").classList.remove("busy"); });
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && playing && ctx && ctx.state !== "running") ctx.resume();
-});
 
 function setSide(next, instant) {
   const fromSlot = slotFor(side);
@@ -555,7 +968,7 @@ function setSide(next, instant) {
   $("eyebrow").textContent = drop && drop.blind
     ? `Blind test · now hearing ${labelFor(next)}`
     : `Now hearing Mix ${labelFor(next)}`;
-  if (fromSlot !== slotFor(next)) handOver(fromSlot, slotFor(next));
+  if (fromSlot !== slotFor(next)) switchMix(fromSlot, slotFor(next));
   else applyGains(instant);
   renderPins();
   draw();
