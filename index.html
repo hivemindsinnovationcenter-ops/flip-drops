@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0d10">
+<meta name="robots" content="noindex">
+<title>Flip Drops</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Geist+Mono:wght@500;600&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0c0d10;
+  --ink: #f3f4f6;
+  --sub: #9aa0aa;
+  --faint: rgba(255,255,255,0.16);
+  --glass: rgba(255,255,255,0.07);
+  --glass-line: rgba(255,255,255,0.16);
+  --peach: #ffb38a;
+  --flame: linear-gradient(160deg, #ffe39a 0%, #ffb347 18%, #ff7a1a 40%, #ff4d1f 60%, #ff2a5f 82%, #c4126b 100%);
+  --orb: linear-gradient(150deg, #ffd27a 0%, #ff8a2a 35%, #ff4d1f 65%, #ff2a5f 100%);
+  --sans: 'Geist', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--peach); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+.app {
+  position: relative; min-height: 100%; max-width: 460px; margin: 0 auto; overflow: hidden;
+  padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+/* Giant background letters */
+.letters { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.letter { position: absolute; font-weight: 900; font-size: min(104vw, 470px); line-height: .8; letter-spacing: -0.06em; }
+.letter.one { top: 120px; left: -8%; }
+.letter.two { top: 260px; left: 44%; }
+.letter .outline { color: transparent; -webkit-text-stroke: 1.5px rgba(255,255,255,0.2); }
+.letter .fill { position: absolute; inset: 0; background: var(--flame); -webkit-background-clip: text; background-clip: text; color: transparent; opacity: 0; transition: opacity .45s ease; }
+.letter.on .fill { opacity: 1; }
+
+.progress { position: relative; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.14); overflow: hidden; }
+.progress > div { height: 100%; border-radius: 2px; background: linear-gradient(90deg, #ffd27a, #ff7a1a, #ff2a5f); transition: width 1s linear; }
+
+.header { position: relative; display: flex; align-items: center; gap: 10px; }
+.avatar { width: 36px; height: 36px; flex: none; border-radius: 18px; background: var(--orb); display: grid; place-items: center; font-weight: 700; font-size: 15px; color: #fff; }
+.who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.who strong { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who span { font-size: 12px; color: var(--sub); }
+.pill { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--glass-line); background: rgba(255,255,255,0.08); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); font-family: var(--mono); font-size: 12px; font-weight: 600; color: #ffd9c4; white-space: nowrap; }
+.pill.urgent { color: #ff9ab0; border-color: rgba(255,90,110,0.45); }
+
+.spacer { flex: 1; min-height: 150px; }
+
+.card {
+  position: relative; display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: 34px;
+  border: 1px solid var(--glass-line); background: rgba(18,18,22,0.55);
+  backdrop-filter: blur(30px) saturate(210%); -webkit-backdrop-filter: blur(30px) saturate(210%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.3), 0 30px 60px rgba(0,0,0,0.6);
+}
+.eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase; color: var(--sub); }
+.title { margin: 2px 0 0; font-size: 30px; font-weight: 700; letter-spacing: -1.1px; line-height: 1.05; overflow-wrap: anywhere; }
+.question { margin: 0; font-size: 15px; color: #c9ccd3; }
+
+.wave { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.pins { position: relative; height: 14px; }
+.pins i { position: absolute; top: 0; width: 12px; height: 12px; margin-left: -6px; border-radius: 6px; background: linear-gradient(150deg, #ffd27a, #ff4d1f); box-shadow: 0 0 8px rgba(255,77,31,0.6); }
+canvas.waveform { width: 100%; height: 48px; display: block; touch-action: none; cursor: pointer; }
+.times { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; color: var(--sub); }
+
+.composer { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 6px 0 14px; border-radius: 22px; background: rgba(255,255,255,0.07); }
+.composer label { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--peach); }
+.composer input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-size: 15px; }
+.composer input::placeholder, .name input::placeholder { color: #7d828c; }
+.send { width: 32px; height: 32px; flex: none; border-radius: 16px; border: 0; background: var(--ink); display: grid; place-items: center; padding: 0; }
+.send:disabled { opacity: .4; cursor: default; }
+.name { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 20px; border: 1px dashed var(--faint); }
+.name input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-size: 14px; }
+.toast { font-size: 13px; color: var(--peach); min-height: 0; }
+
+.votes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.btn { height: 50px; border-radius: 25px; border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.08); font-size: 16px; font-weight: 600; }
+.btn:active { transform: scale(.97); }
+.voted { display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 10px 16px; border-radius: 25px; background: linear-gradient(150deg, rgba(255,210,122,0.18), rgba(255,42,95,0.18)); border: 1px solid rgba(255,179,71,0.4); font-size: 15px; font-weight: 600; }
+.voted button { margin-left: auto; border: 0; background: transparent; color: var(--sub); font-size: 13px; text-decoration: underline; }
+
+.dock { position: relative; display: flex; gap: 12px; align-items: center; }
+.seg { position: relative; flex: 1; height: 76px; border-radius: 38px; border: 1px solid var(--glass-line); background: var(--glass); backdrop-filter: blur(26px) saturate(190%); -webkit-backdrop-filter: blur(26px) saturate(190%); box-shadow: inset 0 1px 0 rgba(255,255,255,0.3), 0 20px 40px rgba(0,0,0,0.6); }
+.seg .knob { position: absolute; top: 6px; left: 6px; width: calc(50% - 6px); height: 62px; border-radius: 31px; background: var(--ink); transition: transform .38s cubic-bezier(.3,1.4,.5,1); }
+.seg.right .knob { transform: translateX(calc(100% - 6px)); }
+.seg .opts { position: relative; display: grid; grid-template-columns: 1fr 1fr; height: 100%; }
+.seg button { border: 0; background: transparent; font-size: 24px; font-weight: 700; color: var(--sub); transition: color .2s; }
+.seg button[aria-pressed="true"] { color: var(--bg); }
+.orb { width: 76px; height: 76px; flex: none; border-radius: 38px; border: 1px solid rgba(255,255,255,0.45); background: var(--orb); box-shadow: inset 0 1px 0 rgba(255,255,255,0.6), 0 16px 36px rgba(255,77,31,0.4); display: grid; place-items: center; padding: 0; }
+.orb:active { transform: scale(.95); }
+.orb:disabled { opacity: .6; }
+
+/* States */
+.center { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 12px; padding: 40px 16px; }
+.center h1 { margin: 0; font-size: 32px; font-weight: 700; letter-spacing: -1px; line-height: 1.08; text-wrap: balance; }
+.center p { margin: 0; font-size: 15px; line-height: 1.45; color: var(--sub); max-width: 32ch; text-wrap: balance; }
+.ghosts { position: relative; width: 240px; height: 230px; margin-bottom: 20px; }
+.ghost { position: absolute; width: 140px; height: 172px; border-radius: 38px; border: 1.5px dashed rgba(255,255,255,0.2); display: grid; place-items: center; font-size: 110px; font-weight: 900; color: transparent; -webkit-text-stroke: 1.5px rgba(255,255,255,0.18); }
+.ghost.a { left: 10px; top: 40px; transform: rotate(-9deg); }
+.ghost.b { left: 100px; top: 0; transform: rotate(11deg); opacity: .7; }
+.spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.15); border-top-color: var(--peach); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.brand { position: relative; text-align: center; font-size: 12px; color: #6e7380; }
+.brand b { color: var(--sub); font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<main class="app" id="app">
+  <div class="letters" aria-hidden="true" id="letters" hidden>
+    <div class="letter one" id="letterOne"><span class="outline">X</span><span class="fill">X</span></div>
+    <div class="letter two" id="letterTwo"><span class="outline">Y</span><span class="fill">Y</span></div>
+  </div>
+
+  <section class="center" id="loading" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Opening drop…</p>
+  </section>
+
+  <section class="center" id="problem" hidden>
+    <h1 id="problemTitle">Can't open this drop</h1>
+    <p id="problemText"></p>
+  </section>
+
+  <section class="center" id="expired" hidden>
+    <div class="ghosts" aria-hidden="true"><div class="ghost b">B</div><div class="ghost a">A</div></div>
+    <div class="pill" style="color:#7d828c">00:00:00</div>
+    <h1>This drop has expired</h1>
+    <p id="expiredText">It was only here for 24 hours. The audio has been deleted.</p>
+  </section>
+
+  <div id="player" hidden style="display:contents">
+    <div class="progress" role="progressbar" aria-label="Time left on this drop" aria-valuemin="0" aria-valuemax="100" id="progress"><div id="progressFill" style="width:100%"></div></div>
+
+    <header class="header">
+      <div class="avatar" id="avatar" aria-hidden="true">F</div>
+      <div class="who"><strong id="sender">Flip Drops</strong><span>sent you a drop</span></div>
+      <div class="pill" id="timeLeft" role="timer">--</div>
+    </header>
+
+    <div class="spacer"></div>
+
+    <section class="card" aria-labelledby="songTitle">
+      <div>
+        <div class="eyebrow" id="eyebrow">Now hearing</div>
+        <h1 class="title" id="songTitle"></h1>
+        <p class="question" id="question" hidden></p>
+      </div>
+
+      <div class="wave">
+        <div class="pins" id="pins" aria-hidden="true"></div>
+        <canvas class="waveform" id="waveform" role="slider" tabindex="0" aria-label="Position in song" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas>
+        <div class="times"><span id="timeNow">0:00</span><span id="timeRest">-0:00</span></div>
+      </div>
+
+      <div id="notesBox" hidden>
+        <div class="name" id="nameRow" style="margin-bottom:8px">
+          <input id="listenerName" type="text" maxlength="60" autocomplete="name" placeholder="Your name (the sender sees it)" aria-label="Your name">
+        </div>
+        <form class="composer" id="noteForm">
+          <label for="noteInput" id="noteAt">0:00</label>
+          <input id="noteInput" type="text" maxlength="500" autocomplete="off" placeholder="Add a note at this moment">
+          <button class="send" id="noteSend" type="submit" aria-label="Post note" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0c0d10" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+          </button>
+        </form>
+        <div class="toast" id="noteToast" aria-live="polite"></div>
+      </div>
+
+      <div class="votes" id="voteButtons">
+        <button class="btn" type="button" id="voteOne">Prefer X</button>
+        <button class="btn" type="button" id="voteTwo">Prefer Y</button>
+      </div>
+      <div class="voted" id="voted" hidden>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffb38a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>
+        <span id="votedText"></span>
+        <button type="button" id="changeVote">Change</button>
+      </div>
+    </section>
+
+    <div class="dock">
+      <div class="seg" id="seg" role="group" aria-label="Choose mix">
+        <div class="knob" aria-hidden="true"></div>
+        <div class="opts">
+          <button type="button" id="sideOne" aria-pressed="true">X</button>
+          <button type="button" id="sideTwo" aria-pressed="false">Y</button>
+        </div>
+      </div>
+      <button class="orb" type="button" id="play" aria-label="Play">
+        <svg id="playIcon" width="26" height="26" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10-6.5a1 1 0 0 0 0-1.8l-10-6.5A1 1 0 0 0 8 5.5z"/></svg>
+        <svg id="pauseIcon" width="26" height="26" viewBox="0 0 24 24" fill="#fff" aria-hidden="true" hidden><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <p class="brand">Sent with <b>Flip Drops</b> · gone after 24 hours</p>
+</main>
+
+<script>
+// ── Configuration ─────────────────────────────────────────────
+// Fill these in from Supabase: Project Settings → API.
+const SUPABASE_URL = "https://zhihaizvsaxfgqqkhxif.supabase.co";
+const SUPABASE_KEY = "sb_publishable_kwO3Klh8QZNfCAMkjQq0PA_7sVC4tpA";
+// ──────────────────────────────────────────────────────────────
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+function dropIdFromLocation() {
+  const hash = location.hash.replace(/^#\/?/, "");
+  const query = new URLSearchParams(location.search).get("d") || "";
+  const id = (hash || query).trim();
+  return /^[A-Za-z0-9]{6,16}$/.test(id) ? id : null;
+}
+
+function listenerId() {
+  let id = store.get("flipListener");
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() :
+      "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+    store.set("flipListener", id);
+  }
+  return id;
+}
+
+function headers(extra = {}) {
+  const h = { apikey: SUPABASE_KEY, ...extra };
+  if (SUPABASE_KEY.startsWith("ey")) h.Authorization = "Bearer " + SUPABASE_KEY;
+  return h;
+}
+
+const api = {
+  async get(id) {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/drop?id=${encodeURIComponent(id)}`, { headers: headers() });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(body.error || "This drop couldn't be loaded."), { status: res.status });
+    return body;
+  },
+  async post(payload) {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/drop`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(body.error || "That didn't go through. Try again."), { status: res.status, expired: body.expired });
+    return body;
+  },
+};
+
+const fmt = (s) => {
+  s = Math.max(0, Math.floor(s || 0));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+};
+
+function show(section) {
+  for (const id of ["loading", "problem", "expired", "player"]) $(id).hidden = id !== section;
+  $("letters").hidden = section !== "player";
+}
+
+function showProblem(title, text) {
+  $("problemTitle").textContent = title;
+  $("problemText").textContent = text;
+  show("problem");
+}
+
+// ── State ─────────────────────────────────────────────────────
+let drop = null;
+let id = null;
+const me = listenerId();
+let xIs = "a";            // which real mix is behind the first button
+let side = "one";         // "one" or "two"
+let duration = 0;
+let scrubbing = false;
+let ctx = null, gainA = null, gainB = null;
+const elA = new Audio();
+const elB = new Audio();
+for (const el of [elA, elB]) { el.crossOrigin = "anonymous"; el.preload = "auto"; el.setAttribute("playsinline", ""); }
+
+const slotFor = (s) => s === "one" ? xIs : (xIs === "a" ? "b" : "a");
+const labelFor = (s) => drop && drop.blind ? (s === "one" ? "X" : "Y") : slotFor(s).toUpperCase();
+
+// ── Load ──────────────────────────────────────────────────────
+async function load() {
+  id = dropIdFromLocation();
+  if (SUPABASE_URL.includes("YOUR-PROJECT")) {
+    return showProblem("Not set up yet", "This player hasn't been connected to Flip Drops. Add the Supabase details at the top of index.html.");
+  }
+  if (!id) return showProblem("Can't open this drop", "This link is missing its drop code. Ask the sender to share it again.");
+
+  try {
+    drop = await api.get(id);
+  } catch (err) {
+    return showProblem("Can't open this drop", err.message);
+  }
+
+  document.title = `${drop.title} · Flip Drops`;
+  if (drop.expired) return showExpired();
+
+  if (drop.blind) {
+    xIs = store.get("flipX-" + id) || (Math.random() < 0.5 ? "a" : "b");
+    store.set("flipX-" + id, xIs);
+  } else {
+    xIs = "a";
+  }
+
+  elA.src = drop.urlA;
+  elB.src = drop.urlB;
+  duration = drop.duration || 0;
+
+  $("sender").textContent = drop.senderName || "Flip Drops";
+  $("avatar").textContent = (drop.senderName || "F").trim().charAt(0).toUpperCase();
+  $("songTitle").textContent = drop.title;
+  if (drop.question) { $("question").textContent = `“${drop.question}”`; $("question").hidden = false; }
+  $("notesBox").hidden = drop.audience === "friends";
+  const savedName = store.get("flipName");
+  if (savedName) $("listenerName").value = savedName;
+
+  $("sideOne").textContent = labelFor("one");
+  $("sideTwo").textContent = labelFor("two");
+  $("voteOne").textContent = "Prefer " + labelFor("one");
+  $("voteTwo").textContent = "Prefer " + labelFor("two");
+  document.querySelector("#letterOne .outline").textContent = labelFor("one");
+  document.querySelector("#letterOne .fill").textContent = labelFor("one");
+  document.querySelector("#letterTwo .outline").textContent = labelFor("two");
+  document.querySelector("#letterTwo .fill").textContent = labelFor("two");
+
+  renderPins();
+  renderVote();
+  setSide("one", true);
+  show("player");
+  resizeCanvas();
+  tickClock();
+  setInterval(tickClock, 1000);
+}
+
+function showExpired() {
+  pause();
+  $("expiredText").textContent = drop && drop.title
+    ? `This ${drop.senderName || "Flip Drops"} mix of ${drop.title} was only here for 24 hours. The audio has been deleted.`
+    : "It was only here for 24 hours. The audio has been deleted.";
+  show("expired");
+}
+
+// ── Countdown ─────────────────────────────────────────────────
+function tickClock() {
+  if (!drop) return;
+  const left = (new Date(drop.expiresAt).getTime() - Date.now()) / 1000;
+  if (left <= 0) { drop.expired = true; return showExpired(); }
+  const h = Math.floor(left / 3600), m = Math.floor(left / 60) % 60, s = Math.floor(left % 60);
+  $("timeLeft").textContent = h > 0 ? `${h}h ${String(m).padStart(2, "0")}m left` : `${m}m ${String(s).padStart(2, "0")}s left`;
+  $("timeLeft").classList.toggle("urgent", left < 3600);
+  const pct = Math.max(0, Math.min(100, left / 864));
+  $("progressFill").style.width = pct + "%";
+  $("progress").setAttribute("aria-valuenow", String(Math.round(pct)));
+}
+
+// ── Audio ─────────────────────────────────────────────────────
+function ensureAudioGraph() {
+  if (ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  ctx = new AC();
+  gainA = ctx.createGain();
+  gainB = ctx.createGain();
+  ctx.createMediaElementSource(elA).connect(gainA).connect(ctx.destination);
+  ctx.createMediaElementSource(elB).connect(gainB).connect(ctx.destination);
+  applyGains(true);
+}
+
+function levelFactors() {
+  if (!drop || !drop.levelMatch || !drop.rmsA || !drop.rmsB) return { a: 1, b: 1 };
+  const ref = Math.min(drop.rmsA, drop.rmsB);
+  return { a: ref / drop.rmsA, b: ref / drop.rmsB };
+}
+
+function applyGains(instant) {
+  if (!ctx) return;
+  const f = levelFactors();
+  const live = slotFor(side);
+  const t = ctx.currentTime;
+  const targetA = live === "a" ? f.a : 0;
+  const targetB = live === "b" ? f.b : 0;
+  for (const [g, v] of [[gainA, targetA], [gainB, targetB]]) {
+    g.gain.cancelScheduledValues(t);
+    if (instant) g.gain.setValueAtTime(v, t);
+    else g.gain.setTargetAtTime(v, t, 0.01);
+  }
+}
+
+const isPlaying = () => !elA.paused;
+
+async function play() {
+  ensureAudioGraph();
+  if (ctx.state === "suspended") await ctx.resume();
+  const end = trackLength();
+  if (end && elA.currentTime >= end - 0.05) seek(0);
+  elB.currentTime = elA.currentTime;
+  try {
+    await Promise.all([elA.play(), elB.play()]);
+  } catch (err) {
+    pause();
+    return showToast("Playback was blocked. Tap play again.");
+  }
+  setPlayIcon(true);
+}
+
+function pause() {
+  elA.pause();
+  elB.pause();
+  setPlayIcon(false);
+}
+
+function seek(seconds) {
+  const end = trackLength() || 0;
+  const t = Math.max(0, Math.min(end, seconds));
+  elA.currentTime = t;
+  elB.currentTime = t;
+  draw();
+}
+
+function trackLength() {
+  const a = isFinite(elA.duration) ? elA.duration : 0;
+  const b = isFinite(elB.duration) ? elB.duration : 0;
+  if (a && b) return Math.min(a, b);
+  return a || b || duration;
+}
+
+function setPlayIcon(playing) {
+  $("playIcon").hidden = playing;
+  $("pauseIcon").hidden = !playing;
+  $("play").setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+
+// Keep B locked to A.
+setInterval(() => {
+  if (!isPlaying() || elB.paused) return;
+  if (Math.abs(elA.currentTime - elB.currentTime) > 0.04) elB.currentTime = elA.currentTime;
+}, 250);
+
+elA.addEventListener("ended", pause);
+elA.addEventListener("loadedmetadata", () => { duration = trackLength(); draw(); });
+elA.addEventListener("error", () => showToast("The audio couldn't load. This browser may not support the file type."));
+
+function setSide(next, instant) {
+  side = next;
+  $("seg").classList.toggle("right", next === "two");
+  $("sideOne").setAttribute("aria-pressed", String(next === "one"));
+  $("sideTwo").setAttribute("aria-pressed", String(next === "two"));
+  $("letterOne").classList.toggle("on", next === "one");
+  $("letterTwo").classList.toggle("on", next === "two");
+  $("eyebrow").textContent = drop && drop.blind
+    ? `Blind test · now hearing ${labelFor(next)}`
+    : `Now hearing Mix ${labelFor(next)}`;
+  applyGains(instant);
+  draw();
+  if (!instant && navigator.vibrate) navigator.vibrate(8);
+}
+
+// ── Waveform ──────────────────────────────────────────────────
+const canvas = $("waveform");
+const g = canvas.getContext("2d");
+
+function resizeCanvas() {
+  const ratio = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(rect.width * ratio));
+  canvas.height = Math.max(1, Math.round(rect.height * ratio));
+  draw();
+}
+window.addEventListener("resize", resizeCanvas);
+
+function shape() {
+  if (!drop) return [];
+  const a = drop.waveformA || [], b = drop.waveformB || [];
+  if (drop.blind) return a.map((v, i) => (v + (b[i] ?? v)) / 2);
+  return slotFor(side) === "a" ? a : b;
+}
+
+function progress() {
+  const end = trackLength();
+  return end ? Math.min(1, elA.currentTime / end) : 0;
+}
+
+function draw() {
+  const values = shape();
+  const w = canvas.width, h = canvas.height;
+  g.clearRect(0, 0, w, h);
+  const p = progress();
+  if (!values.length) {
+    g.fillStyle = "rgba(255,255,255,0.16)";
+    g.fillRect(0, h / 2 - 1, w, 2);
+  } else {
+    const step = w / values.length;
+    const bar = Math.max(1.5, step * 0.6);
+    values.forEach((v, i) => {
+      const bh = Math.max(3, v * h);
+      g.fillStyle = (i + 0.5) / values.length <= p ? "#f3f4f6" : "rgba(255,255,255,0.18)";
+      const x = i * step + (step - bar) / 2;
+      const y = (h - bh) / 2;
+      g.beginPath();
+      if (g.roundRect) g.roundRect(x, y, bar, bh, bar / 2); else g.rect(x, y, bar, bh);
+      g.fill();
+    });
+  }
+  const head = g.createLinearGradient(0, 0, 0, h);
+  head.addColorStop(0, "#ffb347"); head.addColorStop(0.5, "#ff4d1f"); head.addColorStop(1, "#ff2a5f");
+  g.fillStyle = head;
+  g.fillRect(Math.round(p * w) - 1, 0, 2 * (window.devicePixelRatio || 1), h);
+
+  const end = trackLength();
+  $("timeNow").textContent = fmt(elA.currentTime);
+  $("timeRest").textContent = "-" + fmt(Math.max(0, end - elA.currentTime));
+  $("noteAt").textContent = fmt(elA.currentTime);
+  canvas.setAttribute("aria-valuenow", String(Math.round(p * 100)));
+  canvas.setAttribute("aria-valuetext", `${fmt(elA.currentTime)} of ${fmt(end)}`);
+}
+
+(function frame() { if (!scrubbing) draw(); requestAnimationFrame(frame); })();
+
+function seekFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  seek(f * trackLength());
+}
+canvas.addEventListener("pointerdown", (e) => { scrubbing = true; canvas.setPointerCapture(e.pointerId); seekFromEvent(e); });
+canvas.addEventListener("pointermove", (e) => { if (scrubbing) seekFromEvent(e); });
+canvas.addEventListener("pointerup", () => { scrubbing = false; });
+canvas.addEventListener("pointercancel", () => { scrubbing = false; });
+canvas.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") { seek(elA.currentTime + 5); e.preventDefault(); }
+  if (e.key === "ArrowLeft") { seek(elA.currentTime - 5); e.preventDefault(); }
+});
+
+function renderPins() {
+  const box = $("pins");
+  box.textContent = "";
+  const end = trackLength() || duration;
+  if (!drop || !end) return;
+  for (const at of drop.notePins || []) {
+    const pin = document.createElement("i");
+    pin.style.left = Math.min(100, (at / end) * 100) + "%";
+    box.appendChild(pin);
+  }
+}
+elA.addEventListener("loadedmetadata", renderPins);
+
+// ── Voting ────────────────────────────────────────────────────
+function renderVote() {
+  const saved = store.get("flipVote-" + id);
+  $("voteButtons").hidden = !!saved;
+  $("voted").hidden = !saved;
+  if (saved) {
+    const shown = saved === slotFor("one") ? labelFor("one") : labelFor("two");
+    $("votedText").textContent = `You picked ${shown}. ${drop.senderName || "The sender"} will see it.`;
+  }
+}
+
+async function vote(which) {
+  const pick = slotFor(which);
+  const name = $("listenerName").value.trim();
+  for (const b of [$("voteOne"), $("voteTwo")]) b.disabled = true;
+  try {
+    await api.post({ action: "vote", id, listenerId: me, pick, name });
+    store.set("flipVote-" + id, pick);
+    renderVote();
+  } catch (err) {
+    if (err.expired) { drop.expired = true; return showExpired(); }
+    showToast(err.message);
+  } finally {
+    for (const b of [$("voteOne"), $("voteTwo")]) b.disabled = false;
+  }
+}
+
+// ── Notes ─────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(text) {
+  $("noteToast").textContent = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $("noteToast").textContent = ""; }, 4000);
+}
+
+$("noteInput").addEventListener("input", () => { $("noteSend").disabled = !$("noteInput").value.trim(); });
+$("listenerName").addEventListener("change", () => store.set("flipName", $("listenerName").value.trim()));
+
+$("noteForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("noteInput").value.trim();
+  if (!text) return;
+  const at = Math.round(elA.currentTime * 10) / 10;
+  $("noteSend").disabled = true;
+  try {
+    await api.post({ action: "note", id, listenerId: me, at, body: text, name: $("listenerName").value.trim() });
+    $("noteInput").value = "";
+    drop.notePins = [...(drop.notePins || []), at];
+    renderPins();
+    showToast(`Note added at ${fmt(at)}.`);
+  } catch (err) {
+    if (err.expired) { drop.expired = true; return showExpired(); }
+    showToast(err.message);
+    $("noteSend").disabled = false;
+  }
+});
+
+// ── Controls ──────────────────────────────────────────────────
+$("play").addEventListener("click", () => (isPlaying() ? pause() : play()));
+$("sideOne").addEventListener("click", () => setSide("one"));
+$("sideTwo").addEventListener("click", () => setSide("two"));
+$("voteOne").addEventListener("click", () => vote("one"));
+$("voteTwo").addEventListener("click", () => vote("two"));
+$("changeVote").addEventListener("click", () => { store.del("flipVote-" + id); renderVote(); });
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); isPlaying() ? pause() : play(); }
+  if (e.key === "1") setSide("one");
+  if (e.key === "2") setSide("two");
+  if (e.key === "Tab" || e.key.startsWith("Arrow")) return;
+});
+window.addEventListener("hashchange", () => location.reload());
+
+load();
+</script>
+</body>
+</html>
