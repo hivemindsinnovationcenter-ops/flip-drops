@@ -467,6 +467,51 @@ async function fetchRange(url, start, end) {
   return new DataView(await res.arrayBuffer());
 }
 
+// Some phones and servers refuse part-downloads. Then each file is fetched as
+// one ordinary download and read as it arrives, so playback still starts
+// after the first few seconds have come in.
+class WholeFile {
+  constructor(url) {
+    this.chunks = []; this.size = 0; this.done = false; this.failed = null; this.waiters = [];
+    this.abort = new AbortController();
+    this.run(url);
+  }
+  async run(url) {
+    try {
+      const res = await fetch(url, { signal: this.abort.signal });
+      if (!res.ok || !res.body) throw new Error("download");
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        this.chunks.push(value); this.size += value.length;
+        this.wake();
+      }
+      this.done = true;
+    } catch (err) { this.failed = err; }
+    this.wake();
+  }
+  wake() { const w = this.waiters; this.waiters = []; w.forEach((f) => f()); }
+  async read(start, end) {
+    while (this.size <= end && !this.done && !this.failed) await new Promise((r) => this.waiters.push(r));
+    const last = Math.min(end, this.size - 1);
+    if (last < start) throw this.failed || new Error("short");
+    const out = new Uint8Array(last - start + 1);
+    let off = 0, pos = 0;
+    for (const c of this.chunks) {
+      const cs = off, ce = off + c.length;
+      if (ce > start && cs <= last) {
+        const a = Math.max(start, cs) - cs, b = Math.min(last + 1, ce) - cs;
+        out.set(c.subarray(a, b), pos); pos += b - a;
+      }
+      off = ce;
+      if (off > last) break;
+    }
+    return new DataView(out.buffer);
+  }
+  stop() { try { this.abort.abort(); } catch (_) {} }
+}
+
 const tag = (v, o) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
 
 function readExtended(v, o) { // AIFF's 80-bit sample rate
@@ -477,11 +522,11 @@ function readExtended(v, o) { // AIFF's 80-bit sample rate
 
 // Walks the file's chunks (fetching more header if a big tag sits in front of
 // the audio) and returns where the samples are and how they're stored.
-async function readHeader(url) {
-  let base = 0, view = await fetchRange(url, 0, 65535);
+async function readHeader(read) {
+  let base = 0, view = await read(0, 65535);
   const ensure = async (pos, need) => {
     if (pos >= base && pos + need <= base + view.byteLength) return;
-    base = pos; view = await fetchRange(url, pos, pos + 65535);
+    base = pos; view = await read(pos, pos + 65535);
     if (view.byteLength < need) throw new Error("short");
   };
   const kind = tag(view, 0), sub = tag(view, 8);
@@ -557,7 +602,6 @@ function refreshLinks() {
     refreshing = api.get(id).then((fresh) => {
       if (fresh.expired) { drop.expired = true; showExpired(); throw new Error("expired"); }
       drop.urlA = fresh.urlA; drop.urlB = fresh.urlB;
-      if (mixes) { mixes.a.url = fresh.urlA; mixes.b.url = fresh.urlB; }
       if (elA.paused && elB.paused) { elA.src = fresh.urlA; elB.src = fresh.urlB; }
     }).finally(() => setTimeout(() => { refreshing = null; }, 10000));
   }
@@ -565,9 +609,9 @@ function refreshLinks() {
 }
 
 class PcmMix {
-  constructor(url, info) {
+  constructor(source, info) {
     Object.assign(this, info);
-    this.url = url;
+    this.source = source;     // { read(start, end), retry }
     this.bytesPerSample = Math.ceil(this.bits / 8);
     this.frames = Math.floor(this.dataSize / this.blockAlign);
     this.duration = this.frames / this.rate;
@@ -587,8 +631,9 @@ class PcmMix {
     const count = Math.min(this.pieceFrames, this.frames - first);
     const start = this.dataOffset + first * this.blockAlign;
     const end = start + count * this.blockAlign - 1;
-    const p = fetchRange(this.url, start, end)
-      .catch(() => refreshLinks().then(() => fetchRange(this.url, start, end)))
+    const src = this.source;
+    const p = src.read(start, end)
+      .catch((err) => { if (!src.retry) throw err; return refreshLinks().then(() => src.read(start, end)); })
       .then((v) => { const buf = this.decode(v, Math.floor(v.byteLength / this.blockAlign)); this.ready.set(i, buf); this.failedAt.delete(i); return buf; })
       .catch((err) => { this.failedAt.set(i, Date.now()); throw err; })
       .finally(() => this.loading.delete(i));
@@ -771,10 +816,19 @@ async function streamSwitch(fromSlot, toSlot) {
   const id = ++handoff;
   if (!playing) { to.currentTime = Math.min(from.currentTime || 0, lengthOf(toSlot)); applyMutes(); return; }
   if (!DUAL) {
-    const at = from.currentTime || 0;
+    // One stream at a time: start the other at the same moment in the song.
+    // An iPhone ignores a jump on a stream that hasn't loaded yet, so the
+    // jump is made once it has, allowing for the time that took.
+    const at = from.currentTime || 0, began = performance.now();
     from.pause();
-    to.currentTime = at;
+    to.muted = false;
+    const land = () => {
+      if (id !== handoff) return;
+      to.currentTime = Math.min(at + (performance.now() - began) / 1000, lengthOf(toSlot));
+    };
+    if (to.readyState >= 1) land();
     to.play().catch(() => {});
+    if (to.readyState < 1) once(to, "loadedmetadata").then(land);
     return;
   }
   if (to.paused) to.play().catch(() => {});
@@ -801,9 +855,30 @@ function fallBackToStreams() {
 }
 
 // ── Opening a drop ────────────────────────────────────────────
+// Read both files' headers: by part-download if allowed, otherwise as whole
+// downloads. Throws if either mix isn't WAV / AIFF.
+async function openPcm() {
+  const ranged = (slot) => ({ retry: true, read: (s, e) => fetchRange(slot === "a" ? drop.urlA : drop.urlB, s, e) });
+  try {
+    const [ia, ib] = await Promise.all([readHeader(ranged("a").read), readHeader(ranged("b").read)]);
+    return [ia, ib, ranged("a"), ranged("b")];
+  } catch (err) {
+    if (/compressed|not-pcm|bits|bad-header|unknown-length/.test(String(err && err.message))) throw err;
+  }
+  const wa = new WholeFile(drop.urlA), wb = new WholeFile(drop.urlB);
+  const whole = (w) => ({ retry: false, read: (s, e) => w.read(s, e) });
+  try {
+    const [ia, ib] = await Promise.all([readHeader(whole(wa).read), readHeader(whole(wb).read)]);
+    return [ia, ib, whole(wa), whole(wb)];
+  } catch (err) {
+    wa.stop(); wb.stop();
+    throw err;
+  }
+}
+
 async function prepareAudio() {
   try {
-    const [ia, ib] = await Promise.all([readHeader(drop.urlA), readHeader(drop.urlB)]);
+    const [ia, ib, srcA, srcB] = await openPcm();
     // Play was tapped before the files were read, so the clock started at the
     // device's rate. Computers allow restarting it at the mix's rate; iPhones
     // need a fresh tap for that, and resample instead.
@@ -813,7 +888,7 @@ async function prepareAudio() {
     }
     makeContext(ia.rate);
     if (ctx.state !== "running") ctx.resume();
-    mixes = { a: new PcmMix(drop.urlA, ia), b: new PcmMix(drop.urlB, ib) };
+    mixes = { a: new PcmMix(srcA, ia), b: new PcmMix(srcB, ib) };
     mode = "locked";
     // Get the opening seconds of both ready so play starts instantly.
     for (const slot of ["a", "b"]) { mixes[slot].get(0); mixes[slot].get(1); }
@@ -827,6 +902,14 @@ async function prepareAudio() {
   audioReady = true;
   renderPins();
   draw();
+  // Add ?check to the link (before the #) to see how this browser is playing.
+  if (new URLSearchParams(location.search).has("check")) {
+    const how = mode === "locked"
+      ? `In sync · ${mixes.a.source.retry ? "part downloads" : "whole downloads"} · ${mixes.a.rate / 1000} kHz`
+      : "Fallback streams (mixes aren't WAV)";
+    $("noteToast").textContent = how + " · " + (IS_IOS ? "iPhone" : "computer");
+    showToast = (text) => { $("noteToast").textContent = how + " · " + text; };
+  }
   if (pendingPlay) { pendingPlay = false; $("play").classList.remove("busy"); play(); }
 }
 
@@ -1161,11 +1244,11 @@ async function vote(which) {
 
 // ── Notes ─────────────────────────────────────────────────────
 let toastTimer = null;
-function showToast(text) {
+let showToast = function (text) {
   $("noteToast").textContent = text;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { $("noteToast").textContent = ""; }, 4000);
-}
+};
 
 $("noteInput").addEventListener("input", () => { $("noteSend").disabled = !$("noteInput").value.trim(); });
 $("listenerName").addEventListener("change", () => store.set("flipName", $("listenerName").value.trim()));
