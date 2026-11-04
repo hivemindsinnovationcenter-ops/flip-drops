@@ -1319,7 +1319,7 @@ function showPick(which) {
   $("pickLetter").textContent = labelFor(which);
   $("pickCode").textContent = id;
   $("pickTitle").textContent = drop.title;
-  $("pickSub").textContent = drop.blind ? "Blind test · level matched" : `Mix ${labelFor(which)}`;
+  $("pickSub").textContent = drop.blind ? "Blind test" : `Mix ${labelFor(which)}`;
   $("pickLine").textContent = `${drop.senderName || "The sender"} will see you picked ${labelFor(which)}.`;
   $("pick").hidden = false;
   $("pickText").classList.remove("show");
