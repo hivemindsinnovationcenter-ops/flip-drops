@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0c0d10">
 <meta name="robots" content="noindex">
-<title>Flip Drops</title>
+<title>FlipDrops</title>
 <meta name="description" content="Listen to two mixes and pick your favourite. Gone after 24 hours.">
 <link rel="icon" type="image/png" href="favicon.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<meta property="og:site_name" content="Flip Drops">
-<meta property="og:title" content="Flip Drops">
+<meta property="og:site_name" content="FlipDrops">
+<meta property="og:title" content="FlipDrops">
 <meta property="og:description" content="Listen to two mixes and pick your favourite. Gone after 24 hours.">
 <meta property="og:image" content="https://hivemindsinnovationcenter-ops.github.io/flip-drops/icon-512.png">
 <meta property="og:image:width" content="512">
@@ -197,11 +197,11 @@ canvas.waveform { width: 100%; height: 48px; display: block; touch-action: none;
 
     <header class="header">
       <div class="avatar" id="avatar" aria-hidden="true">F</div>
-      <div class="who"><strong id="sender">Flip Drops</strong><span>sent you a drop</span></div>
+      <div class="who"><strong id="sender">FlipDrops</strong><span>sent you a drop</span></div>
       <div class="pill" id="timeLeft" role="timer">--</div>
     </header>
 
-    <a class="open-app" id="openApp" hidden href="#"><img src="apple-touch-icon.png" alt="">Have the app? Open in Flip Drops</a>
+    <a class="open-app" id="openApp" hidden href="#"><img src="apple-touch-icon.png" alt="">Have the app? Open in FlipDrops</a>
 
     <div class="spacer"></div>
 
@@ -279,7 +279,7 @@ canvas.waveform { width: 100%; height: 48px; display: block; touch-action: none;
       </div>
     </div>
   </div>
-  <p class="brand">Sent with <b>Flip Drops</b> · gone after 24 hours</p>
+  <p class="brand">Sent with <b>FlipDrops</b> · gone after 24 hours</p>
 </main>
 
 <script>
@@ -371,7 +371,7 @@ const labelFor = (s) => drop && drop.blind ? (s === "one" ? "X" : "Y") : slotFor
 async function load() {
   id = dropIdFromLocation();
   if (SUPABASE_URL.includes("YOUR-PROJECT")) {
-    return showProblem("Not set up yet", "This player hasn't been connected to Flip Drops. Add the Supabase details at the top of index.html.");
+    return showProblem("Not set up yet", "This player hasn't been connected to FlipDrops. Add the Supabase details at the top of index.html.");
   }
   if (!id) return showProblem("Can't open this drop", "This link is missing its drop code. Ask the sender to share it again.");
 
@@ -381,7 +381,7 @@ async function load() {
     return showProblem("Can't open this drop", err.message);
   }
 
-  document.title = `${drop.title} · Flip Drops`;
+  document.title = `${drop.title} · FlipDrops`;
   if (drop.expired) return showExpired();
 
   if (drop.blind) {
@@ -394,7 +394,7 @@ async function load() {
   duration = drop.duration || 0;
   prepareAudio();
 
-  $("sender").textContent = drop.senderName || "Flip Drops";
+  $("sender").textContent = drop.senderName || "FlipDrops";
   $("avatar").textContent = (drop.senderName || "F").trim().charAt(0).toUpperCase();
   $("songTitle").textContent = drop.title;
   if (drop.question) { $("question").textContent = `“${drop.question}”`; $("question").hidden = false; }
@@ -429,7 +429,7 @@ async function load() {
 function showExpired() {
   pause();
   $("expiredText").textContent = drop && drop.title
-    ? `This ${drop.senderName || "Flip Drops"} mix of ${drop.title} was only here for 24 hours. The audio has been deleted.`
+    ? `This ${drop.senderName || "FlipDrops"} mix of ${drop.title} was only here for 24 hours. The audio has been deleted.`
     : "It was only here for 24 hours. The audio has been deleted.";
   show("expired");
 }
@@ -1142,8 +1142,8 @@ function updateMediaSession() {
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: `${drop.title} · ${labelFor(side)}`,
-      artist: drop.senderName || "Flip Drops",
-      album: "Flip Drops",
+      artist: drop.senderName || "FlipDrops",
+      album: "FlipDrops",
     });
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   } catch (_) {}
