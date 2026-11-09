@@ -4,10 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0c0d10">
+<!-- Security policy: only this page's own script (by its SHA-256 hash), its own fonts and Supabase may load.
+     If you edit the <script> below, the hash must be updated or the page stops working: ask Claude, or
+     recompute: sha256 of everything between <script> and </script>, base64. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-OJNwbBzhKjzSQ6kE+sa2rMa5GEt9l9kUGEf0VfZVHAY='; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src https://zhihaizvsaxfgqqkhxif.supabase.co blob:; connect-src https://zhihaizvsaxfgqqkhxif.supabase.co; base-uri 'none'; object-src 'none'; form-action 'self'; manifest-src 'self'">
+<meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
 <title>FlipDrops</title>
 <meta name="description" content="Listen to two mixes and pick your favourite. Gone after 24 hours.">
 <link rel="icon" type="image/png" href="favicon.png">
+<!-- Fonts are served from this site, not Google, so visitors' IP addresses aren't shared with Google (GDPR / NDPA). Geist: SIL Open Font License, see fonts/OFL-LICENSE.txt. -->
+<link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta property="og:site_name" content="FlipDrops">
 <meta property="og:title" content="FlipDrops">
@@ -15,10 +22,10 @@
 <meta property="og:image" content="https://hivemindsinnovationcenter-ops.github.io/flip-drops/icon-512.png">
 <meta property="og:image:width" content="512">
 <meta property="og:image:height" content="512">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Geist+Mono:wght@500;600&display=swap">
 <style>
+@font-face { font-family: 'Geist'; src: url('fonts/Geist-Variable.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Geist Mono'; src: url('fonts/GeistMono-Variable.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+
 :root {
   color-scheme: dark;
   --bg: #0c0d10;
